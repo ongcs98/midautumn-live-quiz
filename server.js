@@ -1,0 +1,233 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const crypto = require('crypto');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+const PORT = process.env.PORT || 3000;
+
+app.use(express.static('public'));
+app.get('/health', (_req, res) => res.json({ ok: true }));
+
+const rooms = new Map();
+
+function makeCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  do {
+    code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  } while (rooms.has(code));
+  return code;
+}
+
+function publicRoom(room) {
+  return {
+    code: room.code,
+    title: room.title,
+    status: room.status,
+    currentIndex: room.currentIndex,
+    questionCount: room.questions.length,
+    playerCount: room.players.size,
+    secondsPerQuestion: room.secondsPerQuestion,
+    leaderboard: leaderboard(room)
+  };
+}
+
+function leaderboard(room) {
+  return [...room.players.values()]
+    .sort((a, b) => b.score - a.score || b.correct - a.correct || a.totalTimeMs - b.totalTimeMs || a.joinedAt - b.joinedAt)
+    .map((p, i) => ({
+      rank: i + 1,
+      id: p.id,
+      name: p.name,
+      score: Math.round(p.score),
+      correct: p.correct,
+      totalTimeMs: Math.round(p.totalTimeMs)
+    }));
+}
+
+function adminOk(room, token) {
+  return room && token && crypto.timingSafeEqual(Buffer.from(room.adminToken), Buffer.from(String(token)));
+}
+
+function emitLobby(room) {
+  io.to(room.code).emit('room:update', publicRoom(room));
+}
+
+function endQuestion(room) {
+  if (!room || room.status !== 'question') return;
+  clearTimeout(room.timer);
+  room.timer = null;
+  room.status = 'reveal';
+  const q = room.questions[room.currentIndex];
+  io.to(room.code).emit('question:reveal', {
+    correctIndex: q.correctIndex,
+    correctText: q.options[q.correctIndex],
+    leaderboard: leaderboard(room)
+  });
+  emitLobby(room);
+}
+
+function startQuestion(room, index) {
+  if (!room.questions[index]) return false;
+  clearTimeout(room.timer);
+  room.currentIndex = index;
+  room.status = 'question';
+  room.questionStartedAt = Date.now();
+  room.answers = new Map();
+  const q = room.questions[index];
+  io.to(room.code).emit('question:start', {
+    index,
+    number: index + 1,
+    total: room.questions.length,
+    text: q.text,
+    options: q.options,
+    durationMs: room.secondsPerQuestion * 1000,
+    startedAt: room.questionStartedAt
+  });
+  room.timer = setTimeout(() => endQuestion(room), room.secondsPerQuestion * 1000 + 100);
+  emitLobby(room);
+  return true;
+}
+
+io.on('connection', socket => {
+  socket.on('admin:create', ({ title, secondsPerQuestion } = {}, cb = () => {}) => {
+    const code = makeCode();
+    const adminToken = crypto.randomBytes(24).toString('hex');
+    const room = {
+      code,
+      adminToken,
+      title: String(title || '月满中秋 · 全场答题挑战赛').slice(0, 80),
+      secondsPerQuestion: Math.min(60, Math.max(5, Number(secondsPerQuestion) || 15)),
+      questions: [],
+      players: new Map(),
+      socketToPlayer: new Map(),
+      status: 'lobby',
+      currentIndex: -1,
+      questionStartedAt: 0,
+      answers: new Map(),
+      timer: null,
+      adminSocketId: socket.id
+    };
+    rooms.set(code, room);
+    socket.join(code);
+    cb({ ok: true, code, adminToken, room: publicRoom(room) });
+  });
+
+  socket.on('admin:join', ({ code, adminToken } = {}, cb = () => {}) => {
+    const room = rooms.get(String(code || '').toUpperCase());
+    if (!adminOk(room, adminToken)) return cb({ ok: false, error: 'Invalid admin room or token.' });
+    room.adminSocketId = socket.id;
+    socket.join(room.code);
+    cb({ ok: true, room: publicRoom(room), questions: room.questions });
+  });
+
+  socket.on('admin:setQuestions', ({ code, adminToken, questions, secondsPerQuestion } = {}, cb = () => {}) => {
+    const room = rooms.get(String(code || '').toUpperCase());
+    if (!adminOk(room, adminToken)) return cb({ ok: false, error: 'Not authorized.' });
+    if (room.status === 'question') return cb({ ok: false, error: 'Cannot edit questions while a question is active.' });
+    const clean = Array.isArray(questions) ? questions.slice(0, 100).map((q, idx) => ({
+      id: q.id || `q${idx + 1}`,
+      text: String(q.text || '').trim().slice(0, 300),
+      options: Array.isArray(q.options) ? q.options.slice(0, 4).map(x => String(x || '').trim().slice(0, 160)) : [],
+      correctIndex: Number(q.correctIndex)
+    })).filter(q => q.text && q.options.length === 4 && q.options.every(Boolean) && q.correctIndex >= 0 && q.correctIndex <= 3) : [];
+    room.questions = clean;
+    if (secondsPerQuestion != null) room.secondsPerQuestion = Math.min(60, Math.max(5, Number(secondsPerQuestion) || 15));
+    room.currentIndex = -1;
+    room.status = 'lobby';
+    cb({ ok: true, count: room.questions.length });
+    emitLobby(room);
+  });
+
+  socket.on('admin:start', ({ code, adminToken } = {}, cb = () => {}) => {
+    const room = rooms.get(String(code || '').toUpperCase());
+    if (!adminOk(room, adminToken)) return cb({ ok: false, error: 'Not authorized.' });
+    if (!room.questions.length) return cb({ ok: false, error: 'Please add at least one question.' });
+    for (const p of room.players.values()) {
+      p.score = 0; p.correct = 0; p.totalTimeMs = 0; p.answers = [];
+    }
+    const ok = startQuestion(room, 0);
+    cb({ ok });
+  });
+
+  socket.on('admin:next', ({ code, adminToken } = {}, cb = () => {}) => {
+    const room = rooms.get(String(code || '').toUpperCase());
+    if (!adminOk(room, adminToken)) return cb({ ok: false, error: 'Not authorized.' });
+    if (room.status === 'question') endQuestion(room);
+    const next = room.currentIndex + 1;
+    if (next >= room.questions.length) {
+      room.status = 'finished';
+      clearTimeout(room.timer);
+      room.timer = null;
+      io.to(room.code).emit('game:finished', { leaderboard: leaderboard(room) });
+      emitLobby(room);
+      return cb({ ok: true, finished: true });
+    }
+    startQuestion(room, next);
+    cb({ ok: true, finished: false });
+  });
+
+  socket.on('admin:reveal', ({ code, adminToken } = {}, cb = () => {}) => {
+    const room = rooms.get(String(code || '').toUpperCase());
+    if (!adminOk(room, adminToken)) return cb({ ok: false, error: 'Not authorized.' });
+    endQuestion(room);
+    cb({ ok: true });
+  });
+
+  socket.on('player:join', ({ code, name } = {}, cb = () => {}) => {
+    const room = rooms.get(String(code || '').toUpperCase());
+    if (!room) return cb({ ok: false, error: 'Room not found.' });
+    const cleanName = String(name || '').trim().slice(0, 24);
+    if (!cleanName) return cb({ ok: false, error: 'Please enter your name.' });
+    let player = [...room.players.values()].find(p => p.name.toLowerCase() === cleanName.toLowerCase());
+    if (!player) {
+      const id = crypto.randomUUID();
+      player = { id, name: cleanName, score: 0, correct: 0, totalTimeMs: 0, joinedAt: Date.now(), answers: [] };
+      room.players.set(id, player);
+    }
+    room.socketToPlayer.set(socket.id, player.id);
+    socket.join(room.code);
+    cb({ ok: true, playerId: player.id, room: publicRoom(room) });
+    emitLobby(room);
+  });
+
+  socket.on('player:answer', ({ code, playerId, answerIndex } = {}, cb = () => {}) => {
+    const room = rooms.get(String(code || '').toUpperCase());
+    if (!room || room.status !== 'question') return cb({ ok: false, error: 'No active question.' });
+    const player = room.players.get(playerId);
+    if (!player) return cb({ ok: false, error: 'Player not found.' });
+    if (room.answers.has(player.id)) return cb({ ok: false, error: 'Answer already submitted.' });
+    const idx = Number(answerIndex);
+    if (![0,1,2,3].includes(idx)) return cb({ ok: false, error: 'Invalid answer.' });
+    const q = room.questions[room.currentIndex];
+    const elapsedMs = Math.max(0, Math.min(room.secondsPerQuestion * 1000, Date.now() - room.questionStartedAt));
+    const isCorrect = idx === q.correctIndex;
+    let points = 0;
+    if (isCorrect) {
+      const speedRatio = 1 - elapsedMs / (room.secondsPerQuestion * 1000);
+      points = 1000 + Math.max(0, speedRatio) * 1000;
+      player.correct += 1;
+      player.totalTimeMs += elapsedMs;
+      player.score += points;
+    } else {
+      player.totalTimeMs += elapsedMs;
+    }
+    const record = { questionIndex: room.currentIndex, answerIndex: idx, isCorrect, elapsedMs, points };
+    player.answers.push(record);
+    room.answers.set(player.id, record);
+    cb({ ok: true, accepted: true, elapsedMs, isCorrect: null, points: null });
+    if (room.answers.size >= room.players.size && room.players.size > 0) endQuestion(room);
+  });
+
+  socket.on('disconnect', () => {
+    for (const room of rooms.values()) {
+      room.socketToPlayer.delete(socket.id);
+      if (room.adminSocketId === socket.id) room.adminSocketId = null;
+    }
+  });
+});
+
+server.listen(PORT, () => console.log(`Mid-Autumn Live Quiz running on port ${PORT}`));
