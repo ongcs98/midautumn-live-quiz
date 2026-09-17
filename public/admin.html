@@ -1,17 +1,184 @@
-<!doctype html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Admin · 中秋 Live Quiz</title><link rel="stylesheet" href="/style.css"></head><body><main><section class="hero"><div class="moon">🌕</div><h1>中秋 Live Quiz · 管理员</h1><p>建立题目、控制比赛、查看实时排行榜</p></section><section id="createPanel" class="card"><div class="grid two"><div><label>活动名称</label><input id="title" value="月满中秋 · 全场答题挑战赛"></div><div><label>Admin Password</label><input id="password" type="password" placeholder="Admin password"></div><div><label>每题时间</label><select id="seconds"><option>10</option><option selected>15</option><option>20</option><option>30</option></select></div></div><button id="createBtn" class="btn primary" style="margin-top:14px">建立新游戏</button><p id="createMsg" class="muted"></p></section>
-<section id="adminPanel" class="hidden"><div class="card"><div class="topbar"><div><span class="muted">Room Code</span><div class="roomcode" id="roomCode"></div><div class="tiny muted">参加者打开：<span id="joinUrl"></span></div><div class="actions" style="margin-top:8px"><a id="displayLink" class="btn secondary tiny" target="_blank">打开大屏幕模式</a></div></div><div class="center"><img id="qr" alt="Join QR Code" style="width:150px;max-width:100%;border-radius:12px"><div><span class="pill" id="playerCount">0 人</span></div></div></div></div>
-<div class="grid two" style="margin-top:16px"><section class="card"><h2>建立题目</h2><label>题目</label><textarea id="qText" placeholder="例如：中秋节通常是农历哪一天？"></textarea><div class="grid two"><div><label>A</label><input id="a"></div><div><label>B</label><input id="b"></div><div><label>C</label><input id="c"></div><div><label>D</label><input id="d"></div></div><label>正确答案</label><select id="correct"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select><div class="actions" style="margin-top:14px"><button id="addQ" class="btn primary">加入题目</button><button id="sampleQ" class="btn secondary">载入示范题</button></div><p id="qMsg" class="muted"></p><div id="qList"></div></section>
-<section class="card"><h2>比赛控制</h2><div class="status" id="gameState">等待参加者加入。</div><div class="actions" style="margin-top:14px"><button id="startBtn" class="btn gold">开始比赛</button><button id="revealBtn" class="btn secondary" disabled>立即公布答案</button><button id="nextBtn" class="btn primary" disabled>下一题</button></div><div id="liveQuestion" class="hidden" style="margin-top:18px"><div class="topbar"><span class="pill" id="liveCounter"></span><span class="bigtime" id="adminTimer">15.0</span></div><div class="question" id="liveText"></div></div><h3 style="margin-top:22px">实时排行榜</h3><div id="leaderboard"><p class="muted">暂无成绩</p></div></section></div></section></main><script src="/socket.io/socket.io.js"></script><script>
-const socket=io();const $=id=>document.getElementById(id);let code='',token='',questions=[],timer=null,qStart=0,qDur=15000;function saveAdmin(){sessionStorage.setItem('maq_code',code);sessionStorage.setItem('maq_token',token)}
-$('createBtn').onclick=()=>socket.emit('admin:create',{title:$('title').value,secondsPerQuestion:Number($('seconds').value),password:$('password').value},r=>{if(!r.ok)return $('createMsg').textContent=r.error;code=r.code;token=r.adminToken;saveAdmin();openAdmin(r.room)});
-function openAdmin(room){$('createPanel').classList.add('hidden');$('adminPanel').classList.remove('hidden');$('roomCode').textContent=code;const join=`${location.origin}/?room=${code}`;$('joinUrl').textContent=join;$('qr').src='/api/qr?text='+encodeURIComponent(join);$('displayLink').href=`/display.html?room=${code}`;$('playerCount').textContent=room.playerCount+' 人';renderQuestions();}
-function syncQuestions(){socket.emit('admin:setQuestions',{code,adminToken:token,questions,secondsPerQuestion:Number($('seconds').value)},r=>{$('qMsg').textContent=r.ok?`已保存 ${r.count} 题`:r.error;});}
-$('addQ').onclick=()=>{const text=$('qText').value.trim(),opts=[$('a').value.trim(),$('b').value.trim(),$('c').value.trim(),$('d').value.trim()];if(!text||opts.some(x=>!x)){return $('qMsg').textContent='请填完整题目和 A/B/C/D。'}questions.push({text,options:opts,correctIndex:Number($('correct').value)});['qText','a','b','c','d'].forEach(id=>$(id).value='');renderQuestions();syncQuestions();};
-$('sampleQ').onclick=()=>{questions=[{text:'中秋节通常是在农历哪一天？',options:['七月十五','八月十五','九月初九','正月十五'],correctIndex:1},{text:'“但愿人长久”的下一句是？',options:['千里共婵娟','海上生明月','举头望明月','月是故乡明'],correctIndex:0},{text:'中秋节最常见的传统食品是？',options:['粽子','汤圆','月饼','年糕'],correctIndex:2},{text:'传说中住在月亮上的人物是谁？',options:['嫦娥','花木兰','西施','王昭君'],correctIndex:0},{text:'中秋节最常见的主题是？',options:['团圆','登高','扫墓','守岁'],correctIndex:0}];renderQuestions();syncQuestions();};
-function renderQuestions(){$('qList').innerHTML=questions.map((q,i)=>`<div class="qrow"><strong>${i+1}. ${esc(q.text)}</strong><div class="muted tiny">正确：${'ABCD'[q.correctIndex]}</div><button class="btn secondary tiny" data-del="${i}" style="margin-top:7px">删除</button></div>`).join('')||'<p class="muted">还没有题目。</p>';[...$('qList').querySelectorAll('[data-del]')].forEach(b=>b.onclick=()=>{questions.splice(Number(b.dataset.del),1);renderQuestions();syncQuestions()})}
-$('startBtn').onclick=()=>socket.emit('admin:start',{code,adminToken:token},r=>{if(!r.ok)$('gameState').textContent=r.error});$('revealBtn').onclick=()=>socket.emit('admin:reveal',{code,adminToken:token});$('nextBtn').onclick=()=>socket.emit('admin:next',{code,adminToken:token},r=>{if(r.finished)$('gameState').textContent='比赛结束！'});
-socket.on('room:update',r=>{if(r.code!==code)return;$('playerCount').textContent=r.playerCount+' 人';if(r.leaderboard)renderBoard(r.leaderboard);if(r.answerStats&&r.status==='question')$('gameState').textContent=`答题中 · 已回答 ${r.answerStats.answered} / ${r.answerStats.total}`;});socket.on('question:start',q=>{$('gameState').textContent='第 '+q.number+' 题进行中';$('liveQuestion').classList.remove('hidden');$('liveCounter').textContent=`第 ${q.number} / ${q.total} 题`;$('liveText').textContent=q.text;$('revealBtn').disabled=false;$('nextBtn').disabled=true;qStart=Date.now();qDur=q.durationMs;clearInterval(timer);timer=setInterval(()=>{$('adminTimer').textContent=(Math.max(0,qDur-(Date.now()-qStart))/1000).toFixed(1)},100);});socket.on('question:reveal',r=>{clearInterval(timer);$('gameState').innerHTML=`答案：<strong>${'ABCD'[r.correctIndex]}. ${esc(r.correctText)}</strong>`;$('revealBtn').disabled=true;$('nextBtn').disabled=false;renderBoard(r.leaderboard);if(r.stats){$('gameState').innerHTML+=`<div class="tiny muted" style="margin-top:6px">A ${r.stats.counts[0]} · B ${r.stats.counts[1]} · C ${r.stats.counts[2]} · D ${r.stats.counts[3]}</div>`}});socket.on('game:finished',r=>{clearInterval(timer);$('gameState').textContent='🏆 比赛结束';$('liveQuestion').classList.add('hidden');$('nextBtn').disabled=true;renderBoard(r.leaderboard)});
-function renderBoard(list){$('leaderboard').innerHTML=list.slice(0,20).map(p=>`<div class="leader"><div class="rank">${p.rank<=3?['🥇','🥈','🥉'][p.rank-1]:p.rank}</div><div><strong>${esc(p.name)}</strong><div class="muted tiny">答对 ${p.correct} · ${(p.totalTimeMs/1000).toFixed(2)}s</div></div><div class="score">${p.score}</div></div>`).join('')||'<p class="muted">暂无成绩</p>'}
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Admin · 中秋 Live Quiz V3</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .quiz-item{border:1px solid #eadca9;border-radius:14px;padding:12px;margin:9px 0;background:#fffdf6}
+    .quiz-item.active{outline:3px solid rgba(214,161,50,.25);border-color:#d6a132}
+    .quiz-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:7px}
+    .savebar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+    .notice{padding:10px 12px;border-radius:12px;background:#fff7d8;border:1px solid #eadca9;font-size:.9rem}
+    .file-input{max-width:100%}
+  </style>
+</head>
+<body>
+<main>
+  <section class="hero">
+    <div class="moon">🌕</div>
+    <h1>中秋 Live Quiz · V3</h1>
+    <p>先保存题库，活动当天再一键建立房间</p>
+  </section>
+
+  <section id="libraryPanel" class="card">
+    <div class="topbar">
+      <div>
+        <h2 style="margin:0">我的题库 / Saved Quizzes</h2>
+        <p class="muted" style="margin:6px 0 0">题目会保存在这台电脑的浏览器。建议完成后再 Export 一份备份。</p>
+      </div>
+      <button id="newQuizBtn" class="btn primary">＋ 新题库</button>
+    </div>
+    <div id="quizList" style="margin-top:12px"></div>
+    <div class="actions" style="margin-top:12px">
+      <label class="btn secondary" for="importFile">Import 题库</label>
+      <input id="importFile" class="file-input" type="file" accept="application/json,.json" style="display:none">
+    </div>
+    <p id="libraryMsg" class="muted"></p>
+  </section>
+
+  <section id="editorPanel" class="card hidden" style="margin-top:16px">
+    <div class="topbar">
+      <div>
+        <span class="muted">正在编辑</span>
+        <h2 id="editorHeading" style="margin:3px 0 0">题库</h2>
+      </div>
+      <button id="backLibraryBtn" class="btn secondary">返回题库</button>
+    </div>
+
+    <div class="grid two" style="margin-top:14px">
+      <div><label>活动 / Quiz 名称</label><input id="quizTitle" maxlength="80"></div>
+      <div><label>每题时间</label><select id="quizSeconds"><option>10</option><option selected>15</option><option>20</option><option>30</option><option>45</option><option>60</option></select></div>
+    </div>
+
+    <div class="savebar">
+      <button id="saveQuizBtn" class="btn gold">💾 保存题库</button>
+      <button id="exportQuizBtn" class="btn secondary">Export 备份</button>
+      <button id="duplicateQuizBtn" class="btn secondary">复制题库</button>
+      <button id="deleteQuizBtn" class="btn secondary">删除题库</button>
+      <span id="saveState" class="muted tiny"></span>
+    </div>
+
+    <div class="grid two" style="margin-top:18px">
+      <section>
+        <h3>加入题目</h3>
+        <label>题目</label><textarea id="qText" placeholder="例如：中秋节通常是农历哪一天？"></textarea>
+        <div class="grid two">
+          <div><label>A</label><input id="a"></div><div><label>B</label><input id="b"></div>
+          <div><label>C</label><input id="c"></div><div><label>D</label><input id="d"></div>
+        </div>
+        <label>正确答案</label>
+        <select id="correct"><option value="0">A</option><option value="1">B</option><option value="2">C</option><option value="3">D</option></select>
+        <div class="actions" style="margin-top:14px"><button id="addQ" class="btn primary">加入题目</button><button id="sampleQ" class="btn secondary">载入示范题</button></div>
+        <p id="qMsg" class="muted"></p>
+      </section>
+      <section>
+        <div class="topbar"><h3>题目列表</h3><span id="questionCount" class="pill">0 题</span></div>
+        <div id="qList"></div>
+      </section>
+    </div>
+
+    <div class="notice" style="margin-top:18px">
+      <strong>活动当天：</strong>输入 Admin Password 后按「Start New Room」。系统会把这个已保存题库复制到新的 Live Room，题库本身不会被删除。
+    </div>
+    <div class="grid two" style="margin-top:14px">
+      <div><label>Admin Password</label><input id="password" type="password" placeholder="Render 的 ADMIN_PASSWORD"></div>
+      <div style="display:flex;align-items:end"><button id="startRoomBtn" class="btn gold" style="width:100%">🚀 Start New Room</button></div>
+    </div>
+    <p id="startMsg" class="muted"></p>
+  </section>
+
+  <section id="adminPanel" class="hidden" style="margin-top:16px">
+    <div class="card">
+      <div class="topbar">
+        <div>
+          <span class="muted">Room Code</span><div class="roomcode" id="roomCode"></div>
+          <div class="tiny muted">参加者打开：<span id="joinUrl"></span></div>
+          <div class="actions" style="margin-top:8px"><a id="displayLink" class="btn secondary tiny" target="_blank">打开大屏幕模式</a><button id="leaveRoomBtn" class="btn secondary tiny">返回题库</button></div>
+        </div>
+        <div class="center"><img id="qr" alt="Join QR Code" style="width:150px;max-width:100%;border-radius:12px"><div><span class="pill" id="playerCount">0 人</span></div></div>
+      </div>
+    </div>
+    <div class="grid two" style="margin-top:16px">
+      <section class="card">
+        <h2>本房间题目</h2>
+        <p class="muted">来自已保存题库：<strong id="roomQuizName"></strong></p>
+        <div id="roomQList"></div>
+      </section>
+      <section class="card">
+        <h2>比赛控制</h2>
+        <div class="status" id="gameState">等待参加者加入。</div>
+        <div class="actions" style="margin-top:14px"><button id="startBtn" class="btn gold">开始比赛</button><button id="revealBtn" class="btn secondary" disabled>立即公布答案</button><button id="nextBtn" class="btn primary" disabled>下一题</button></div>
+        <div id="liveQuestion" class="hidden" style="margin-top:18px"><div class="topbar"><span class="pill" id="liveCounter"></span><span class="bigtime" id="adminTimer">15.0</span></div><div class="question" id="liveText"></div></div>
+        <h3 style="margin-top:22px">实时排行榜</h3><div id="leaderboard"><p class="muted">暂无成绩</p></div>
+      </section>
+    </div>
+  </section>
+</main>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket=io();
+const $=id=>document.getElementById(id);
+const STORE_KEY='maq_saved_quizzes_v3';
+let quizzes=[];
+let selectedId='';
+let code='',token='',roomQuestions=[],timer=null,qStart=0,qDur=15000;
+
+function uid(){return 'qz_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8)}
 function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-const oldCode=sessionStorage.getItem('maq_code'),oldToken=sessionStorage.getItem('maq_token');if(oldCode&&oldToken){socket.emit('admin:join',{code:oldCode,adminToken:oldToken},r=>{if(r.ok){code=oldCode;token=oldToken;questions=r.questions||[];openAdmin(r.room)}})}
-</script></body></html>
+function readStore(){try{const raw=JSON.parse(localStorage.getItem(STORE_KEY)||'[]');quizzes=Array.isArray(raw)?raw:[]}catch{quizzes=[]}}
+function writeStore(){localStorage.setItem(STORE_KEY,JSON.stringify(quizzes))}
+function selected(){return quizzes.find(q=>q.id===selectedId)||null}
+function nowText(){return new Date().toLocaleString()}
+function createBlankQuiz(title='新中秋题库'){return {id:uid(),title,secondsPerQuestion:15,questions:[],updatedAt:new Date().toISOString()}}
+
+function showLibrary(){selectedId='';$('editorPanel').classList.add('hidden');$('adminPanel').classList.add('hidden');$('libraryPanel').classList.remove('hidden');renderLibrary()}
+function renderLibrary(){
+  if(!quizzes.length){$('quizList').innerHTML='<div class="notice">还没有保存的题库。按「＋ 新题库」开始建立。</div>';return}
+  const sorted=[...quizzes].sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  $('quizList').innerHTML=sorted.map(q=>`<div class="quiz-item"><div class="topbar"><div><strong>${esc(q.title)}</strong><div class="quiz-meta"><span class="pill">${q.questions.length} 题</span><span class="muted tiny">${q.secondsPerQuestion||15}s / 题</span><span class="muted tiny">更新：${new Date(q.updatedAt).toLocaleString()}</span></div></div><button class="btn primary tiny" data-open="${q.id}">打开</button></div></div>`).join('');
+  document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>openEditor(b.dataset.open));
+}
+function openEditor(id){selectedId=id;const q=selected();if(!q)return; $('libraryPanel').classList.add('hidden');$('adminPanel').classList.add('hidden');$('editorPanel').classList.remove('hidden');$('quizTitle').value=q.title;$('quizSeconds').value=String(q.secondsPerQuestion||15);$('editorHeading').textContent=q.title;$('saveState').textContent='已载入';renderEditorQuestions()}
+function saveEditor(message='已保存'){const q=selected();if(!q)return false;const title=$('quizTitle').value.trim();if(!title){$('saveState').textContent='请输入题库名称';return false}q.title=title.slice(0,80);q.secondsPerQuestion=Math.min(60,Math.max(5,Number($('quizSeconds').value)||15));q.updatedAt=new Date().toISOString();writeStore();$('editorHeading').textContent=q.title;$('saveState').textContent=message+' · '+nowText();return true}
+function autoSave(){saveEditor('自动保存')}
+
+$('newQuizBtn').onclick=()=>{const q=createBlankQuiz();quizzes.push(q);writeStore();openEditor(q.id)};
+$('backLibraryBtn').onclick=()=>{saveEditor();showLibrary()};
+$('saveQuizBtn').onclick=()=>saveEditor('已保存');
+$('quizTitle').addEventListener('change',autoSave);$('quizSeconds').addEventListener('change',autoSave);
+
+function renderEditorQuestions(){const q=selected();if(!q)return;$('questionCount').textContent=q.questions.length+' 题';$('qList').innerHTML=q.questions.map((x,i)=>`<div class="qrow"><strong>${i+1}. ${esc(x.text)}</strong><div class="muted tiny">正确：${'ABCD'[x.correctIndex]} · ${esc(x.options[x.correctIndex])}</div><div class="actions" style="margin-top:7px"><button class="btn secondary tiny" data-up="${i}" ${i===0?'disabled':''}>↑</button><button class="btn secondary tiny" data-down="${i}" ${i===q.questions.length-1?'disabled':''}>↓</button><button class="btn secondary tiny" data-del="${i}">删除</button></div></div>`).join('')||'<p class="muted">还没有题目。</p>';
+  document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{q.questions.splice(Number(b.dataset.del),1);autoSave();renderEditorQuestions()});
+  document.querySelectorAll('[data-up]').forEach(b=>b.onclick=()=>{const i=Number(b.dataset.up);[q.questions[i-1],q.questions[i]]=[q.questions[i],q.questions[i-1]];autoSave();renderEditorQuestions()});
+  document.querySelectorAll('[data-down]').forEach(b=>b.onclick=()=>{const i=Number(b.dataset.down);[q.questions[i+1],q.questions[i]]=[q.questions[i],q.questions[i+1]];autoSave();renderEditorQuestions()});
+}
+$('addQ').onclick=()=>{const q=selected();if(!q)return;const text=$('qText').value.trim(),opts=[$('a').value.trim(),$('b').value.trim(),$('c').value.trim(),$('d').value.trim()];if(!text||opts.some(x=>!x))return $('qMsg').textContent='请填完整题目和 A/B/C/D。';q.questions.push({text:text.slice(0,300),options:opts.map(x=>x.slice(0,160)),correctIndex:Number($('correct').value)});['qText','a','b','c','d'].forEach(id=>$(id).value='');$('qMsg').textContent='题目已加入并自动保存。';autoSave();renderEditorQuestions()};
+$('sampleQ').onclick=()=>{const q=selected();if(!q)return;q.questions=[{text:'中秋节通常是在农历哪一天？',options:['七月十五','八月十五','九月初九','正月十五'],correctIndex:1},{text:'“但愿人长久”的下一句是？',options:['千里共婵娟','海上生明月','举头望明月','月是故乡明'],correctIndex:0},{text:'中秋节最常见的传统食品是？',options:['粽子','汤圆','月饼','年糕'],correctIndex:2},{text:'传说中住在月亮上的人物是谁？',options:['嫦娥','花木兰','西施','王昭君'],correctIndex:0},{text:'中秋节最常见的主题是？',options:['团圆','登高','扫墓','守岁'],correctIndex:0}];autoSave();renderEditorQuestions();$('qMsg').textContent='已载入 5 道示范题。'};
+
+$('duplicateQuizBtn').onclick=()=>{const q=selected();if(!q)return;saveEditor();const copy=JSON.parse(JSON.stringify(q));copy.id=uid();copy.title=q.title+' - Copy';copy.updatedAt=new Date().toISOString();quizzes.push(copy);writeStore();openEditor(copy.id)};
+$('deleteQuizBtn').onclick=()=>{const q=selected();if(!q)return;if(!confirm('确定删除这个已保存题库？'))return;quizzes=quizzes.filter(x=>x.id!==q.id);writeStore();showLibrary()};
+$('exportQuizBtn').onclick=()=>{const q=selected();if(!q)return;saveEditor();const blob=new Blob([JSON.stringify({format:'midautumn-live-quiz-v3',exportedAt:new Date().toISOString(),quiz:q},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(q.title.replace(/[^\w\u4e00-\u9fff-]+/g,'_')||'quiz')+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+$('importFile').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{const data=JSON.parse(await file.text());const src=data.quiz||data;if(!src||!Array.isArray(src.questions))throw new Error('Invalid file');const q={id:uid(),title:String(src.title||'Imported Quiz').slice(0,80),secondsPerQuestion:Math.min(60,Math.max(5,Number(src.secondsPerQuestion)||15)),questions:src.questions.slice(0,100).map(x=>({text:String(x.text||'').slice(0,300),options:(x.options||[]).slice(0,4).map(v=>String(v).slice(0,160)),correctIndex:Number(x.correctIndex)})).filter(x=>x.text&&x.options.length===4&&x.options.every(Boolean)&&x.correctIndex>=0&&x.correctIndex<=3),updatedAt:new Date().toISOString()};quizzes.push(q);writeStore();$('libraryMsg').textContent=`已 Import：${q.title} (${q.questions.length} 题)`;renderLibrary()}catch{$('libraryMsg').textContent='Import 失败：请选择 V3 Export 的 JSON 题库文件。'}e.target.value=''};
+
+function saveAdmin(){sessionStorage.setItem('maq_code',code);sessionStorage.setItem('maq_token',token)}
+$('startRoomBtn').onclick=()=>{const q=selected();if(!q)return;if(!saveEditor())return;if(!q.questions.length)return $('startMsg').textContent='请先加入至少 1 道题目。';$('startRoomBtn').disabled=true;$('startMsg').textContent='正在建立 Live Room...';socket.emit('admin:create',{title:q.title,secondsPerQuestion:q.secondsPerQuestion,password:$('password').value},r=>{if(!r.ok){$('startRoomBtn').disabled=false;$('startMsg').textContent=r.error;return}code=r.code;token=r.adminToken;roomQuestions=JSON.parse(JSON.stringify(q.questions));saveAdmin();socket.emit('admin:setQuestions',{code,adminToken:token,questions:roomQuestions,secondsPerQuestion:q.secondsPerQuestion},s=>{if(!s.ok){$('startRoomBtn').disabled=false;$('startMsg').textContent=s.error;return}$('startRoomBtn').disabled=false;$('startMsg').textContent='';openAdmin(r.room,q.title)})})};
+function openAdmin(room,quizName){$('libraryPanel').classList.add('hidden');$('editorPanel').classList.add('hidden');$('adminPanel').classList.remove('hidden');$('roomCode').textContent=code;const join=`${location.origin}/?room=${code}`;$('joinUrl').textContent=join;$('qr').src='/api/qr?text='+encodeURIComponent(join);$('displayLink').href=`/display.html?room=${code}`;$('playerCount').textContent=room.playerCount+' 人';$('roomQuizName').textContent=quizName||room.title||'';renderRoomQuestions()}
+function renderRoomQuestions(){$('roomQList').innerHTML=roomQuestions.map((q,i)=>`<div class="qrow"><strong>${i+1}. ${esc(q.text)}</strong><div class="muted tiny">正确：${'ABCD'[q.correctIndex]}</div></div>`).join('')||'<p class="muted">没有题目。</p>'}
+$('leaveRoomBtn').onclick=()=>showLibrary();
+$('startBtn').onclick=()=>socket.emit('admin:start',{code,adminToken:token},r=>{if(!r.ok)$('gameState').textContent=r.error});
+$('revealBtn').onclick=()=>socket.emit('admin:reveal',{code,adminToken:token});
+$('nextBtn').onclick=()=>socket.emit('admin:next',{code,adminToken:token},r=>{if(r.finished)$('gameState').textContent='比赛结束！'});
+socket.on('room:update',r=>{if(r.code!==code)return;$('playerCount').textContent=r.playerCount+' 人';if(r.leaderboard)renderBoard(r.leaderboard);if(r.answerStats&&r.status==='question')$('gameState').textContent=`答题中 · 已回答 ${r.answerStats.answered} / ${r.answerStats.total}`});
+socket.on('question:start',q=>{$('gameState').textContent='第 '+q.number+' 题进行中';$('liveQuestion').classList.remove('hidden');$('liveCounter').textContent=`第 ${q.number} / ${q.total} 题`;$('liveText').textContent=q.text;$('revealBtn').disabled=false;$('nextBtn').disabled=true;qStart=Date.now();qDur=q.durationMs;clearInterval(timer);timer=setInterval(()=>{$('adminTimer').textContent=(Math.max(0,qDur-(Date.now()-qStart))/1000).toFixed(1)},100)});
+socket.on('question:reveal',r=>{clearInterval(timer);$('gameState').innerHTML=`答案：<strong>${'ABCD'[r.correctIndex]}. ${esc(r.correctText)}</strong>`;$('revealBtn').disabled=true;$('nextBtn').disabled=false;renderBoard(r.leaderboard);if(r.stats)$('gameState').innerHTML+=`<div class="tiny muted" style="margin-top:6px">A ${r.stats.counts[0]} · B ${r.stats.counts[1]} · C ${r.stats.counts[2]} · D ${r.stats.counts[3]}</div>`});
+socket.on('game:finished',r=>{clearInterval(timer);$('gameState').textContent='🏆 比赛结束';$('liveQuestion').classList.add('hidden');$('nextBtn').disabled=true;renderBoard(r.leaderboard)});
+function renderBoard(list){$('leaderboard').innerHTML=list.slice(0,20).map(p=>`<div class="leader"><div class="rank">${p.rank<=3?['🥇','🥈','🥉'][p.rank-1]:p.rank}</div><div><strong>${esc(p.name)}</strong><div class="muted tiny">答对 ${p.correct} · ${(p.totalTimeMs/1000).toFixed(2)}s</div></div><div class="score">${p.score}</div></div>`).join('')||'<p class="muted">暂无成绩</p>'}
+
+readStore();renderLibrary();
+const oldCode=sessionStorage.getItem('maq_code'),oldToken=sessionStorage.getItem('maq_token');
+if(oldCode&&oldToken){socket.emit('admin:join',{code:oldCode,adminToken:oldToken},r=>{if(r.ok){code=oldCode;token=oldToken;roomQuestions=r.questions||[];openAdmin(r.room,r.room.title)}})}
+</script>
+</body>
+</html>
